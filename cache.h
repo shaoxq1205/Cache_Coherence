@@ -15,12 +15,14 @@ typedef unsigned long ulong;
 typedef unsigned char uchar;
 typedef unsigned int uint;
 
-/****add new states, based on the protocol****/
+/****SXQ: add new states, based on the protocol****/
 enum{
 	INVALID = 0,
-	VALID, // or shared
-	DIRTY, //or modified in multi cache situation.
-	EXCL,//exclusive
+	VALID,
+	DIRTY,
+	S,
+	M,
+	E,//exclusive
 	SM, //shared modified
 	SC //shared clean
 };
@@ -50,13 +52,11 @@ protected:
    ulong size, lineSize, assoc, sets, log2Sets, log2Blk, tagMask, numLines;
    ulong reads,readMisses,writes,writeMisses,writeBacks;
 
-   //******///
-   //add coherence counters here///
-   //******///
-
+   //SXQ: add coherence counters here///
    ulong intervention_counter, invalidation_counter;
    ulong cache_to_cache_counter, flush_counter;
    ulong mem_trans_counter;
+   int busrd, busrdx, busupgr, busupd, copyexist;
 
    cacheLine **cache;
    ulong calcTag(ulong addr)     { return (addr >> (log2Blk) );}
@@ -74,8 +74,10 @@ public:
    cacheLine * findLine(ulong addr);
    cacheLine * getLRU(ulong);
    
-   ulong getRM(){return readMisses;} ulong getWM(){return writeMisses;} 
-   ulong getReads(){return reads;}ulong getWrites(){return writes;}
+   ulong getRM(){return readMisses;} 
+   ulong getWM(){return writeMisses;} 
+   ulong getReads(){return reads;}
+   ulong getWrites(){return writes;}
    ulong getWB(){return writeBacks;}
    
    void writeBack(ulong)   {writeBacks++;}
@@ -84,7 +86,16 @@ public:
    void updateLRU(cacheLine *);
 
    //******///
-   //add other functions to handle bus transactions///
+   //SXQ: add other functions to handle bus transactions///
+   ulong getC2CNum(){return cache_to_cache_counter;} 
+   ulong getInterventionNum(){return intervention_counter;} 
+   ulong getInvalidationNum(){return invalidation_counter;} 
+   ulong getFlushes(){return flush_counter;} 
+   ulong getMemTrans(){return mem_trans_counter;}  
+
+   void MSIAccess(ulong, uchar, int, int, Cache **);
+   void MESIAccess(ulong, uchar);
+   void DragonAccess(ulong, uchar);
    //******///
 
 };
