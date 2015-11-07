@@ -15,16 +15,14 @@ typedef unsigned long ulong;
 typedef unsigned char uchar;
 typedef unsigned int uint;
 
-/****SXQ: add new states, based on the protocol****/
+/****add new states, based on the protocol****/
 enum{
 	INVALID = 0,
-	VALID,
-	DIRTY,
-	S,
-	M,
-	E,//exclusive
-	SM, //shared modified
-	SC //shared clean
+	VALID,     //SHARED
+	DIRTY,     //MODIFIED
+	EXCLUSIVE,
+	SHAREDM,   //SHARED MODIFIED
+	SHAREDC
 };
 
 class cacheLine 
@@ -32,7 +30,7 @@ class cacheLine
 protected:
    ulong tag;
    ulong Flags;   // 0:invalid, 1:valid, 2:dirty 
-   ulong seq; //question: what does seq mean?
+   ulong seq;     //?
  
 public:
    cacheLine()            { tag = 0; Flags = 0; }
@@ -42,8 +40,8 @@ public:
    void setSeq(ulong Seq)			{ seq = Seq;}
    void setFlags(ulong flags)			{  Flags = flags;}
    void setTag(ulong a)   { tag = a; }
-   void invalidate()      { tag = 0; Flags = INVALID; }//useful function              //question: why set tag 0?
-   bool isValid()         { return ((Flags) != INVALID); }
+   void invalidate()      { tag = 0; Flags = INVALID; }//useful function
+   bool isValid()         { return ((Flags) != INVALID); }//Including M, SC, SM, E, S, important!!!
 };
 
 class Cache
@@ -52,11 +50,11 @@ protected:
    ulong size, lineSize, assoc, sets, log2Sets, log2Blk, tagMask, numLines;
    ulong reads,readMisses,writes,writeMisses,writeBacks;
 
-   //SXQ: add coherence counters here///
-   ulong intervention_counter, invalidation_counter;
-   ulong cache_to_cache_counter, flush_counter;
-   ulong mem_trans_counter;
-   int busrd, busrdx, busupgr, busupd, copyexist;
+   //******///
+   //add coherence counters here///
+   //******///
+   ulong interventions, invalidations;
+   
 
    cacheLine **cache;
    ulong calcTag(ulong addr)     { return (addr >> (log2Blk) );}
@@ -65,6 +63,13 @@ protected:
    
 public:
     ulong currentCycle;  
+	ulong Memtrans; //memory transaction
+	ulong ca2ca; //cache to cache transfers
+	ulong flushes;
+	ulong busrdxes;
+
+	int busrd, busrdx, busupgr, busupd;
+	bool copyexist;
      
     Cache(int,int,int);
    ~Cache() { delete cache;}
@@ -74,28 +79,34 @@ public:
    cacheLine * findLine(ulong addr);
    cacheLine * getLRU(ulong);
    
-   ulong getRM(){return readMisses;} 
-   ulong getWM(){return writeMisses;} 
-   ulong getReads(){return reads;}
-   ulong getWrites(){return writes;}
+   ulong getRM(){return readMisses;} ulong getWM(){return writeMisses;} 
+   ulong getReads(){return reads;}ulong getWrites(){return writes;}
    ulong getWB(){return writeBacks;}
    
-   void writeBack(ulong)   {writeBacks++;}
-   void Access(ulong,uchar);
+   ulong getC2C(){ return ca2ca; }
+   ulong getInterventions(){ return interventions; }
+   ulong getInvalidations(){ return invalidations; }
+   ulong getFlushes(){ return flushes; }
+   ulong getBusRdX(){ return busrdxes; }
+
+
+   void writeBack(ulong)   { writeBacks++; Memtrans++; }
+  // void Access(ulong,uchar, int);
+   void MSIAccess(int, int, ulong,uchar, int, Cache **);
+   void MESIAccess(int, int, ulong,uchar, int, Cache **);
+   void DragonAccess(int, int, ulong,uchar, int, Cache **);
    void printStats();
    void updateLRU(cacheLine *);
 
    //******///
-   //SXQ: add other functions to handle bus transactions///
-   ulong getC2CNum(){return cache_to_cache_counter;} 
-   ulong getInterventionNum(){return intervention_counter;} 
-   ulong getInvalidationNum(){return invalidation_counter;} 
-   ulong getFlushes(){return flush_counter;} 
-   ulong getMemTrans(){return mem_trans_counter;}  
-
-   void MSIAccess(ulong, uchar, int, int, Cache **);
-   void MESIAccess(ulong, uchar);
-   void DragonAccess(ulong, uchar);
+   //add other functions to handle bus transactions///
+   void BusRdX(bool, ulong);
+   void BusUpgrade(bool, ulong);
+   void BusUpdate(bool, ulong);
+   void MSIBusRd(bool, ulong);
+   void MESIBusRd(bool, ulong);
+   void DragonBusRd(bool, ulong);
+   int findcopy(ulong);
    //******///
 
 };

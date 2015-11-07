@@ -7,6 +7,7 @@
 
 #include <stdlib.h>
 #include <assert.h>
+#include <stdio.h>
 #include "cache.h"
 using namespace std;
 
@@ -15,6 +16,8 @@ Cache::Cache(int s,int a,int b )
    ulong i, j;
    reads = readMisses = writes = 0; 
    writeMisses = writeBacks = currentCycle = 0;
+   ca2ca = Memtrans = interventions = invalidations = flushes = busrdxes = 0;
+   busrd = busrdx = 0;
 
    size       = (ulong)(s);
    lineSize   = (ulong)(b);
@@ -25,13 +28,7 @@ Cache::Cache(int s,int a,int b )
    log2Blk    = (ulong)(log2(b));   
   
    //*******************//
-   //SXQ: initialize your counters here//
-   intervention_counter=0;
-   invalidation_counter=0;
-   cache_to_cache_counter=0;
-   flush_counter=0;
-   mem_trans_counter=0;
-   busrd=busrdx=busupgr=busupd=copyexist=0;
+   //initialize your counters here//
    //*******************//
  
    tagMask =0;
@@ -57,10 +54,11 @@ Cache::Cache(int s,int a,int b )
 /**you might add other parameters to Access()
 since this function is an entry point 
 to the memory hierarchy (i.e. caches)**/
-void Cache::Access(ulong addr,uchar op)
+void Cache::MSIAccess(int processor, int num_processors, ulong addr,uchar op, int protocol, Cache **cache)
 {
 	currentCycle++;/*per cache global counter to maintain LRU order 
 			among cache ways, updated on every cache access*/
+	busrd = busrdx = busupgr = busupd = 0;
         	
 	if(op == 'w') writes++;
 	else          reads++;
@@ -68,190 +66,213 @@ void Cache::Access(ulong addr,uchar op)
 	cacheLine * line = findLine(addr);
 	if(line == NULL)/*miss*/
 	{
+		//MSI don't care if other copies exist, just grab from memory
+		Memtrans++;
+
+		//RW miss counter
 		if(op == 'w') writeMisses++;
 		else readMisses++;
-
-		cacheLine *newline = fillLine(addr);
-   		if(op == 'w') newline->setFlags(DIRTY);    
 		
+		//Change state & parse Bus command
+		cacheLine *newline = fillLine(addr);
+		if (op == 'w')//PrWr
+		{
+			newline->setFlags(DIRTY);						
+			if (protocol == 0) {busrdx = 1;busrdxes++;}
+		}
+		
+		if (op == 'r') //PrRd
+		{
+			if (protocol == 0) busrd = 1;
+		}
 	}
 	else
 	{
 		/**since it's a hit, update LRU and update dirty flag**/
 		updateLRU(line);
-		if(op == 'w') line->setFlags(DIRTY);
-	}
-}
+		//Only SHARED -> MODIFIED has BusRdX and MemTransaction
+		if ((line->getFlags() == VALID) && (op == 'w'))   
+		{
+			busrdx = 1;
+			busrdxes++;
+			Memtrans++;
+			line->setFlags(DIRTY);
+		}
 
-void Cache::MSIAccess(ulong addr,uchar op, int proc_num, int proc_total_num, Cache **cache)
+	}
+
+	//Other Caches deal with bus commands
+	for (int i = 0; i < num_processors; i++)
+	{
+		if (i != processor)
+		{
+		cache[i]->MSIBusRd(busrd, addr);
+		cache[i]->BusRdX(busrdx, addr);
+		//no upgrade nor update for MSI
+		}
+	}
+
+}
+void Cache::MESIAccess(int processor, int num_processors, ulong addr,uchar op, int protocol , Cache **cache)
 {
 	currentCycle++;/*per cache global counter to maintain LRU order 
 			among cache ways, updated on every cache access*/
-
-	busrd=busrdx=0;		
+	busrd = busrdx = busupgr = busupd = 0;
+        	
 	if(op == 'w') writes++;
 	else          reads++;
 	
 	cacheLine * line = findLine(addr);
 	if(line == NULL)/*miss*/
 	{
-		if(op == 'w')//PrWr 
-			{
-			line->setFlags(M);
-			busrd=0;
-			busrdx=1;
-			mem_trans_counter++;
-			writeMisses++;
-			}
-		else //PrRd
-			{
-			line->setFlags(S);
-			busrd=1;
-			busrdx=0;
-			mem_trans_counter++;
-			readMisses++;
-			}
+		//Mem_transaction or other caches feed
+		if(copyexist) ca2ca++;
+		else Memtrans++;
 
-		cacheLine *newline = fillLine(addr);
-   		if(op == 'w') newline->setFlags(DIRTY);    
+		//RW miss counter
+		if(op == 'w') writeMisses++;
+		else readMisses++;
 		
+		//Change state & parse Bus command
+		cacheLine *newline = fillLine(addr);
+		if (op == 'w')//PrWr
+		{
+			newline->setFlags(DIRTY);			
+			busrdx = 1;
+			busrdxes++;
+
+		}
+		
+		if (op == 'r') //PrRd
+		{
+			busrd = 1;
+			if (copyexist ) newline->setFlags(VALID);//SHARED
+			else newline->setFlags(EXCLUSIVE);
+		}
 	}
-	else/*hit*/
+	else
 	{
 		/**since it's a hit, update LRU and update dirty flag**/
 		updateLRU(line);
-		switch(line->getFlags())
+		if ((line->getFlags() == VALID) && (op == 'w'))
 			{
-			case INVALID:
-				{
-					if(op == 'w')//PrWr 
-						{
-						line->setFlags(M);
-						busrd=0;
-						busrdx=1;
-						mem_trans_counter++;
-
-						}
-					else //PrRd
-						{
-						line->setFlags(S);
-						busrd=1;
-						busrdx=0;
-						mem_trans_counter++;
-						}
-				}
-			case S:
-				{
-					if(op == 'w')//PrWr 
-						{
-						line->setFlags(M);
-						busrdx=1;
-						mem_trans_counter++;
-
-						}
-					//else do nth 
-				}
-			case M:
-				{
-					//do nth.
-				}
+				busupgr = 1;
+				line->setFlags(DIRTY) ;
 			}
+		if ((line->getFlags() == EXCLUSIVE) && (op == 'w'))
+			line->setFlags(DIRTY) ;//MODIFIED
 	}
-	
-	//Each processor/cache read bus commands
-	for (int i=0; i<proc_total_num; i++)
+
+	//Other Caches deal with bus commands
+	for (int i = 0; i < num_processors; i++)
+	{
+		if (i != processor)
 		{
-		if(i!=proc_num)//not current processor/cache
+		cache[i]->MESIBusRd(busrd, addr);
+		cache[i]->BusRdX(busrdx, addr);
+		cache[i]->BusUpgrade(busupgr, addr);
+		//no update for MESI
+		}
+	}
+}
+void Cache::DragonAccess(int processor, int num_processors, ulong addr,uchar op, int protocol, Cache **cache)
+{
+	currentCycle++;/*per cache global counter to maintain LRU order 
+			among cache ways, updated on every cache access*/
+	busrd = busrdx = busupgr = busupd = 0;
+        	
+	if(op == 'w') writes++;
+	else          reads++;
+	
+	cacheLine * line = findLine(addr);
+	if(line == NULL)/*miss*/
+	{
+		Memtrans++;
+
+		//RW miss counter
+		if(op == 'w') writeMisses++;
+		else readMisses++;
+		
+		//Change state & parse Bus command
+		cacheLine *newline = fillLine(addr);
+		if (op == 'w')//PrWr
+		{
+			newline->setFlags(DIRTY);					
+			busrd = 1;
+			if (copyexist )
 			{
-				cacheline *temp = cache[i]->findLine(addr);
-				if(temp) //!=NULL
-					switch (temp->getFlags())
-					{
-						case S:
-							{
-								if(busrdx) //invalidate all the other caches.
-									{
-									temp->setFlags(INVALID);
-									cache[i]->invalidation_counter++;																	
-									}
-							}
-						case M:
-							{
-								if(busrd) //difference: invalidation and intervention
-									{
-									temp->setFlags(S);
-									cache[i]->flush_counter++;
-									cache[i]->intervention_counter++;
-									cache[i]->writebacks++;
-									}
-								if(busrdx)
-									{
-									temp->setFlags(INVALID);
-									cache[i]->flush_counter++;
-									cache[i]->invalidation_counter++;
-									cache[i]->writebacks++;
-									}
-							}
-						case INVALID: //do nth.
-							
-					}
+				newline->setFlags(SHAREDM);
+				busupd = 1;
+			}
+			else
+			{
+				newline->setFlags(DIRTY);//MODIFIED
 			}
 		}
-}
-
-void Cache::MESIAccess(ulong addr,uchar op)
-{
-	currentCycle++;/*per cache global counter to maintain LRU order 
-			among cache ways, updated on every cache access*/
-        	
-	if(op == 'w') writes++;
-	else          reads++;
-	
-	cacheLine * line = findLine(addr);
-	if(line == NULL)/*miss*/
-	{
-		if(op == 'w') writeMisses++;
-		else readMisses++;
-
-		cacheLine *newline = fillLine(addr);
-   		if(op == 'w') newline->setFlags(DIRTY);    
 		
+		if (op == 'r') //PrRd
+		{
+			if (copyexist )
+			{
+				newline->setFlags(SHAREDC);
+				busrd = 1;
+			}
+			else
+			{
+				newline->setFlags(EXCLUSIVE);
+				busrd = 1;
+			}
+		}
 	}
 	else
 	{
 		/**since it's a hit, update LRU and update dirty flag**/
 		updateLRU(line);
-		if(op == 'w') line->setFlags(DIRTY);
+			if (op == 'w')
+			{
+				if (line->getFlags() == EXCLUSIVE)
+				{
+					line->setFlags(DIRTY);//MODIFIED
+				}
+				if (line->getFlags() == SHAREDC)
+				{
+					if (copyexist )
+					{
+						line->setFlags(SHAREDM);
+						busupd = 1;
+					}
+					else
+					{
+						line->setFlags(DIRTY);
+						busupd = 1;
+					}
+				}
+				if (line->getFlags() == SHAREDM)
+				{
+					if (copyexist )
+						busupd = 1;
+					else
+					{
+						line->setFlags(DIRTY);
+						busupd = 1;
+					}
+				}
+			}
 	}
-}
 
-void Cache::DragonAccess(ulong addr,uchar op)
-{
-	currentCycle++;/*per cache global counter to maintain LRU order 
-			among cache ways, updated on every cache access*/
-        	
-	if(op == 'w') writes++;
-	else          reads++;
-	
-	cacheLine * line = findLine(addr);
-	if(line == NULL)/*miss*/
+	//Other Caches deal with bus commands
+	for (int i = 0; i < num_processors; i++)
 	{
-		if(op == 'w') writeMisses++;
-		else readMisses++;
+		if (i != processor)
+		{
+		cache[i]->DragonBusRd(busrd, addr);
+		cache[i]->BusRdX(busrdx, addr);
+		cache[i]->BusUpgrade(busupgr, addr);
+		cache[i]->BusUpdate(busupd, addr);
+		}
+	}
 
-		cacheLine *newline = fillLine(addr);
-   		if(op == 'w') newline->setFlags(DIRTY);    
-		
-	}
-	else
-	{
-		/**since it's a hit, update LRU and update dirty flag**/
-		updateLRU(line);
-		if(op == 'w') line->setFlags(DIRTY);
-	}
 }
-
-
 /*look up line*/
 cacheLine * Cache::findLine(ulong addr)
 {
@@ -317,7 +338,10 @@ cacheLine *Cache::fillLine(ulong addr)
   
    cacheLine *victim = findLineToReplace(addr);
    assert(victim != 0);
-   if(victim->getFlags() == DIRTY) writeBack(addr);
+   if ((victim->getFlags() == DIRTY) || (victim->getFlags() == SHAREDM))
+   {
+	   writeBack(addr);
+   }
     	
    tag = calcTag(addr);   
    victim->setTag(tag);
@@ -330,16 +354,134 @@ cacheLine *Cache::fillLine(ulong addr)
 
 void Cache::printStats()
 { 
-	printf("===== Simulation results      =====\n");
+	//printf("===== Simulation results      =====\n");
+	/****print out the rest of statistics here.****/
+	/****follow the ouput file format**************/
 	printf("01. number of reads: 				%lu\n", getReads());
 	printf("02. number of read misses: 			%lu\n", getRM());
 	printf("03. number of writes: 				%lu\n", getWrites());
 	printf("04. number of write misses:			%lu\n", getWM());
 	printf("05. total miss rate: 				%.2f%%\n", (double)(getRM() + getWM()) * 100 / (getReads() + getWrites()));
 	printf("06. number of writebacks: 			%lu\n", getWB());
-	printf("07. number of cache-to-cache transfers: 	%lu\n", getC2CNum());
-	printf("08. number of memory transactions: 		%lu\n", getMemTrans());
-	printf("09. number of interventions: 			%lu\n", getInterventionNum());
-	printf("10. number of invalidations: 			%lu\n", getInvalidationNum());
-	printf("11. number of flushes: 				%lu\n", getFlushes());	
+	printf("07. number of cache-to-cache transfers: 	%lu\n", getC2C());
+	printf("08. number of memory transactions: 		%lu\n", Memtrans);
+	printf("09. number of interventions: 			%lu\n", getInterventions());
+	printf("10. number of invalidations: 			%lu\n", getInvalidations());
+	printf("11. number of flushes: 				%lu\n", getFlushes());
+	printf("12. number of BusRdX: 				%lu\n", getBusRdX());
+}
+
+
+void Cache::MSIBusRd(bool a, ulong addr)
+{
+if(a){
+	cacheLine *line = findLine(addr);
+	if (line != NULL)
+	{               
+		if (line->getFlags() == DIRTY)
+		{
+			writeBacks++;
+			Memtrans++;
+			flushes++;
+			line->setFlags(VALID);
+			interventions++;
+		}
+	}
+}
+}
+void Cache::MESIBusRd(bool a, ulong addr)
+{
+if(a){
+	cacheLine *line = findLine(addr);
+	if (line != NULL)
+	{               
+		if (line->getFlags() == DIRTY)
+		{
+			writeBacks++;
+			Memtrans++;
+			flushes++;
+			line->setFlags(VALID);
+			interventions++;
+			return;
+		}
+		if (line->getFlags() == EXCLUSIVE)
+		{
+			line->setFlags(VALID);
+			interventions++;
+		}
+	}
+}
+}
+void Cache::DragonBusRd(bool a, ulong addr)
+{
+if(a){
+	cacheLine *line = findLine(addr);
+	if (line != NULL)
+	{               
+		if (line->getFlags() == DIRTY)
+		{
+			line->setFlags(SHAREDM);
+			flushes++;
+			writeBacks++;
+			Memtrans++;
+			interventions++;
+		}
+		if (line->getFlags() == EXCLUSIVE)
+		{
+			line->setFlags(SHAREDC);
+			interventions++;
+		}
+
+		if (line->getFlags() == SHAREDM)
+		{
+			flushes++;
+			writeBacks++;
+			Memtrans++;
+			return;
+		}
+	}
+}
+}
+void Cache::BusRdX(bool a, ulong addr)
+{
+if(a){
+	cacheLine * line = findLine(addr);
+	if (line != NULL)
+	{
+		if (line->getFlags() == DIRTY)
+		{
+			writeBacks++;
+			Memtrans++;
+			flushes++;
+		}
+		
+		line->invalidate();
+		invalidations++;
+	}
+}
+}
+void Cache::BusUpgrade(bool a, ulong addr)
+{
+if(a){
+	cacheLine *line = findLine(addr);
+	if (line != NULL)
+	{
+		if (line->getFlags() == VALID)
+		{
+			line->invalidate();
+			invalidations++;
+		}
+	}
+}
+}
+
+void Cache::BusUpdate(bool a, ulong addr)
+{
+if(a){
+	cacheLine *line = findLine(addr);
+	if (line != NULL)
+	{
+		if (line->getFlags() == SHAREDM) line->setFlags(SHAREDC);
+	}
+}
 }
