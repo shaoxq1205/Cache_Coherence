@@ -8,9 +8,9 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <fstream>
-using namespace std;
-
 #include "cache.h"
+
+using namespace std;
 
 int main(int argc, char *argv[])
 {
@@ -24,7 +24,6 @@ int main(int argc, char *argv[])
 		 exit(0);
         }
 
-	/*****uncomment the next five lines*****/
 	int cache_size = atoi(argv[1]);
 	int cache_assoc= atoi(argv[2]);
 	int blk_size   = atoi(argv[3]);
@@ -34,7 +33,6 @@ int main(int argc, char *argv[])
  	fname = argv[6];
 
 	
-	//****************************************************//
 	printf("===== 506 Personal information =====\n");
 	printf("Name: Xiaoqiang Shao\n");
 	printf("Unity ID: xshao2\n");
@@ -45,19 +43,16 @@ int main(int argc, char *argv[])
 	printf("L1_BLOCKSIZE:		%d\n", blk_size);
 	printf("NUMBER OF PROCESSORS:	%d\n", num_processors);
 	if (protocol == 0) printf("COHERENCE PROTOCOL:	MSI\n");
-	if (protocol == 1) printf("COHERENCE PROTOCOL:	MESI\n");
-	if (protocol == 2) printf("COHERENCE PROTOCOL:	Dragon\n");
+	else if (protocol == 1) printf("COHERENCE PROTOCOL:	MESI\n");
+	else if (protocol == 2) printf("COHERENCE PROTOCOL:	Dragon\n");
+	else {printf("Wrong COHERENCE PROTOCOL!\n");exit(0);}
 	printf("TRACE FILE: 	trace/%s\n", fname);
-	//****************************************************//
 
- 
-	//*********************************************//
     //*****create an array of caches here**********//
 	Cache **cache = (Cache **)malloc(num_processors);
 	for (int i = 0; i < num_processors; i++)
 	{
 		cache[i] = new Cache(cache_size, cache_assoc, blk_size);
-	//	cache[i]->protocol = protocol;
 	}
 	//*********************************************//	
 
@@ -72,32 +67,30 @@ int main(int argc, char *argv[])
 	//*****propagate each request down through memory hierarchy**********//
 	//*****by calling cachesArray[processor#]->Access(...)***************//
 	///******************************************************************//
-	int processor;                //processor(0-7)
+	int current_proc_num;
 	char operation;
 	int address;
 
 	while (!feof(pFile))
 	{
-		fscanf(pFile, "%d", &processor);
+		fscanf(pFile, "%d", &current_proc_num);
 		fscanf(pFile, " ");
 		operation = fgetc(pFile);
 		fscanf(pFile, "%x", &address);
 		fscanf(pFile, "\n");
 		
 		//Check whether copy exist for MESI and Dragon protocols
-		cache[processor]->copyexist = 0;
+		cache[current_proc_num]->copyexist = 0;
 		for (int i = 0; i < num_processors; i++)
-			if ((i != processor)&&(cache[i]->findLine(address)))
+			if ((i != current_proc_num)&&(cache[i]->findLine(address)))//if other caches can find same blk in the same addr.
 			{
-				cache[processor]->copyexist = 1;
+				cache[current_proc_num]->copyexist = 1;
 			}
 
 		//Access Current Cache
-		if (protocol==0) cache[processor]->MSIAccess(processor, num_processors, address,operation, protocol, cache);
-		if (protocol==1) cache[processor]->MESIAccess(processor, num_processors, address,operation, protocol, cache);
-		if (protocol==2) cache[processor]->DragonAccess(processor, num_processors, address,operation, protocol, cache);
-		
-
+		if (protocol==0) cache[current_proc_num]->MSIAccess(current_proc_num, num_processors, address,operation, protocol, cache);
+		if (protocol==1) cache[current_proc_num]->MESIAccess(current_proc_num, num_processors, address,operation, protocol, cache);
+		if (protocol==2) cache[current_proc_num]->DragonAccess(current_proc_num, num_processors, address,operation, protocol, cache);
 	}
 	fclose(pFile);
 
